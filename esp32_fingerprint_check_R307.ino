@@ -3,10 +3,26 @@
 #include <Keypad.h>
 #include <LiquidCrystal_I2C.h>
 #include <EEPROM.h>
+#include <PubSubClient.h> // Added for MQTT
+#include <ArduinoJson.h>  // Added for JSON formatting
 
 // WiFi credentials
 const char* ssid = "VNUK4-10";
 const char* password = "Z@q12wsx";
+
+// MQTT Configuration
+const char* mqtt_server = "172.16.5.124";
+const int mqtt_port = 1883;
+const char* mqtt_user = "mqtt_user";       // Change if your broker requires authentication
+const char* mqtt_password = "mqtt_password";   // Change if your broker requires authentication
+const char* mqtt_client_id = "ESP32_Fingerprint_System";
+const char* mqtt_topic_attendance = "fingerprint/attendance";
+const char* mqtt_topic_status = "fingerprint/status";
+const char* mqtt_topic_command = "fingerprint/command";
+
+WiFiClient espClient;
+PubSubClient mqtt(espClient);
+
 // I2C LCD Display (20x4)
 LiquidCrystal_I2C lcd(0x27, 20, 4); // Address 0x27, 20 chars, 4 lines
 
@@ -37,18 +53,24 @@ char hexaKeys[ROWS][COLS] = {
 };
 
 // Define keypad pins (4x3 matrix)
-byte rowPins[ROWS] = {13, 12, 14, 19}; // GPIO pins for rows
-byte colPins[COLS] = {18, 4, 2}; // GPIO pins for columns
+byte rowPins[ROWS] = {13, 12, 14, 27}; // GPIO pins for rows
+byte colPins[COLS] = {26, 25, 23}; // GPIO pins for columns
 
 Keypad customKeypad = Keypad(makeKeymap(hexaKeys), rowPins, colPins, ROWS, COLS);
 
 // System variables
 String inputPassword = "";
-String adminPassword = "1234"; // Admin password
+String adminPassword = "1214"; // Admin password
 bool adminMode = false;
 unsigned long lastActivity = 0;
 const unsigned long TIMEOUT = 30000; // 30 seconds timeout
 unsigned long systemStartTime = 0; // System start time for relative timestamps
+
+// MQTT related variables
+unsigned long lastMqttReconnectAttempt = 0;
+const unsigned long MQTT_RECONNECT_INTERVAL = 5000; // 5 seconds between reconnect attempts
+unsigned long lastStatusUpdate = 0;
+const unsigned long STATUS_UPDATE_INTERVAL = 60000; // 1 minute between status updates
 
 // Attendance data structure
 struct Employee {
@@ -74,7 +96,19 @@ int employeeCount = 0;
 void setup() {
   Serial.begin(115200);
   
-    // Connect to WiFi
+  // Initialize I2C LCD
+  lcd.init();
+  lcd.backlight();
+  lcd.clear();
+  
+  // Initialize pins
+  pinMode(BUZZER, OUTPUT);
+  pinMode(RELAY, OUTPUT);
+  
+  // Initial state
+  digitalWrite(RELAY, LOW);
+  
+  // Connect to WiFi
   lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print("Connecting to WiFi");
@@ -105,6 +139,9 @@ void setup() {
     lcd.print(WiFi.localIP()[2]); lcd.print(".");
     lcd.print(WiFi.localIP()[3]);
 
+    // Setup MQTT connection
+    setupMqtt();
+    
     playSuccessSound();
     delay(4000);
   } else {
@@ -115,24 +152,12 @@ void setup() {
     playErrorSound();
     delay(3000);
   }
-
+  
   // Store system start time
   systemStartTime = millis();
   
   // Initialize EEPROM
   EEPROM.begin(EEPROM_SIZE);
-  
-  // Initialize I2C LCD
-  lcd.init();
-  lcd.backlight();
-  lcd.clear();
-  
-  // Initialize pins (LEDs removed)
-  pinMode(BUZZER, OUTPUT);
-  pinMode(RELAY, OUTPUT);
-  
-  // Initial state
-  digitalWrite(RELAY, LOW);
   
   // Initialize fingerprint sensor AS608
   mySerial.begin(57600, SERIAL_8N1, 16, 17); // RX=16, TX=17
@@ -141,10 +166,20 @@ void setup() {
     Serial.println("AS608 Fingerprint sensor detected!");
     lcd.setCursor(0, 0);
     lcd.print("Fingerprint: OK");
+    
+    // Publish sensor status to MQTT
+    if (mqtt.connected()) {
+      mqtt.publish(mqtt_topic_status, "Fingerprint sensor online", true);
+    }
   } else {
     Serial.println("AS608 sensor not found!");
     lcd.setCursor(0, 0);
     lcd.print("Fingerprint: ERROR");
+    
+    // Publish error status to MQTT
+    if (mqtt.connected()) {
+      mqtt.publish(mqtt_topic_status, "Fingerprint sensor ERROR", true);
+    }
   }
   
   finger.getTemplateCount();
@@ -167,9 +202,25 @@ void setup() {
   Serial.println("===============================");
   
   lastActivity = millis();
+  
+  // Send initial status to Raspberry Pi
+  sendSystemStatus();
 }
 
 void loop() {
+  // Handle MQTT connection and messages
+  if (!mqtt.connected()) {
+    reconnectMqtt();
+  }
+  mqtt.loop();
+  
+  // Periodic status update to MQTT server
+  unsigned long currentMillis = millis();
+  if (currentMillis - lastStatusUpdate > STATUS_UPDATE_INTERVAL) {
+    sendSystemStatus();
+    lastStatusUpdate = currentMillis;
+  }
+  
   // Check for timeout
   if (millis() - lastActivity > TIMEOUT && !adminMode) {
     resetToMainScreen();
@@ -204,6 +255,19 @@ void loop() {
       lcd.print("register first!");
       
       Serial.println("Unregistered fingerprint detected");
+      
+      // Send unauthorized attempt to MQTT server
+      if (mqtt.connected()) {
+        DynamicJsonDocument doc(256);
+        doc["event"] = "unauthorized";
+        doc["timestamp"] = millis() - systemStartTime;
+        doc["message"] = "Unregistered fingerprint detected";
+        
+        char buffer[256];
+        size_t n = serializeJson(doc, buffer);
+        mqtt.publish(mqtt_topic_status, buffer, n);
+      }
+      
       playUnauthorizedSound();
       delay(4000);
       displayWelcomeScreen();
@@ -213,6 +277,151 @@ void loop() {
   }
   
   delay(200);
+}
+
+// MQTT Setup Function
+void setupMqtt() {
+  mqtt.setServer(mqtt_server, mqtt_port);
+  mqtt.setCallback(mqttCallback);
+  
+  // Try to connect initially
+  reconnectMqtt();
+}
+
+// MQTT Reconnection Logic
+bool reconnectMqtt() {
+  unsigned long now = millis();
+  if (now - lastMqttReconnectAttempt < MQTT_RECONNECT_INTERVAL) {
+    return false; // Not time to try reconnecting yet
+  }
+  
+  lastMqttReconnectAttempt = now;
+  
+  Serial.print("Attempting MQTT connection...");
+  lcd.setCursor(0, 3);
+  lcd.print("MQTT Connecting...  ");
+  
+  // Create a random client ID
+  String clientId = mqtt_client_id;
+  clientId += String(random(0xffff), HEX);
+  
+  // Attempt to connect
+  if (mqtt.connect(clientId.c_str(), mqtt_user, mqtt_password)) {
+    Serial.println("connected");
+    lcd.setCursor(0, 3);
+    lcd.print("MQTT Connected      ");
+    
+    // Subscribe to command topic
+    mqtt.subscribe(mqtt_topic_command);
+    
+    // Send birth message
+    mqtt.publish(mqtt_topic_status, "{\"status\":\"online\",\"device\":\"ESP32_Fingerprint_System\"}", true);
+    
+    delay(1000); // Show the message briefly
+    displayWelcomeScreen();
+    return true;
+  } else {
+    Serial.print("failed, rc=");
+    Serial.print(mqtt.state());
+    Serial.println(" try again in 5 seconds");
+    lcd.setCursor(0, 3);
+    lcd.print("MQTT Failed        ");
+    return false;
+  }
+}
+
+// MQTT Callback Function for receiving commands
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  Serial.print("Message arrived [");
+  Serial.print(topic);
+  Serial.print("] ");
+  
+  char message[length + 1];
+  for (unsigned int i = 0; i < length; i++) {
+    message[i] = (char)payload[i];
+    Serial.print((char)payload[i]);
+  }
+  message[length] = '\0';
+  Serial.println();
+  
+  // Process incoming commands
+  if (strcmp(topic, mqtt_topic_command) == 0) {
+    DynamicJsonDocument doc(512);
+    DeserializationError error = deserializeJson(doc, message);
+    
+    if (!error) {
+      String command = doc["command"].as<String>();
+      
+      if (command == "status") {
+        sendSystemStatus();
+      }
+      else if (command == "sync") {
+        syncAttendanceData();
+      }
+      else if (command == "reboot") {
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("Remote Reboot");
+        lcd.setCursor(0, 1);
+        lcd.print("Command Received");
+        mqtt.publish(mqtt_topic_status, "{\"status\":\"rebooting\"}", true);
+        delay(3000);
+        ESP.restart();
+      }
+    }
+  }
+}
+
+// Function to send system status to MQTT server
+void sendSystemStatus() {
+  if (!mqtt.connected()) return;
+  
+  DynamicJsonDocument doc(512);
+  
+  doc["device"] = mqtt_client_id;
+  doc["status"] = "online";
+  doc["uptime"] = (millis() - systemStartTime) / 1000;
+  doc["employees"] = employeeCount;
+  doc["attendance_records"] = attendanceCount;
+  doc["fingerprint_templates"] = finger.templateCount;
+  doc["wifi_rssi"] = WiFi.RSSI();
+  doc["ip"] = WiFi.localIP().toString();
+  
+  char buffer[512];
+  size_t n = serializeJson(doc, buffer);
+  mqtt.publish(mqtt_topic_status, buffer, n);
+}
+
+// Function to sync all attendance data with server
+void syncAttendanceData() {
+  if (!mqtt.connected()) return;
+  
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Syncing Data...");
+  
+  // Send the last 20 attendance records or all if less than 20
+  int startIdx = (attendanceCount > 20) ? attendanceCount - 20 : 0;
+  for (int i = startIdx; i < attendanceCount; i++) {
+    DynamicJsonDocument doc(256);
+    
+    doc["id"] = attendanceLog[i].empId;
+    doc["name"] = attendanceLog[i].empName;
+    doc["action"] = attendanceLog[i].action;
+    doc["timestamp"] = attendanceLog[i].timestamp;
+    
+    char buffer[256];
+    size_t n = serializeJson(doc, buffer);
+    mqtt.publish(mqtt_topic_attendance, buffer, n);
+    
+    // Brief delay to avoid flooding the network
+    delay(100);
+  }
+  
+  lcd.setCursor(0, 1);
+  lcd.print("Sync Complete");
+  delay(2000);
+  displayWelcomeScreen();
 }
 
 void displayWelcomeScreen() {
@@ -239,13 +448,6 @@ void handleKeypadInput(char key) {
   Serial.println(key);
   
   if (key == '*') {
-    // Clear input
-    inputPassword = "";
-    lcd.setCursor(0, 1);
-    lcd.print("Input cleared      ");
-    Serial.println("Input cleared");
-  }
-  else if (key == '#') {
     if (adminMode) {
       handleAdminCommand();
     } else {
@@ -268,12 +470,29 @@ void checkAdminPassword() {
     Serial.println("Admin mode activated!");
     displayAdminMenu();
     playSuccessSound();
+    
+    // Notify MQTT server about admin mode
+    if (mqtt.connected()) {
+      mqtt.publish(mqtt_topic_status, "{\"status\":\"admin_mode_active\"}", false);
+    }
   } else {
     Serial.println("Wrong admin password!");
     lcd.clear();
     lcd.setCursor(0, 0);
     lcd.print("ACCESS DENIED");
     playErrorSound();
+    
+    // Notify MQTT server about failed admin access
+    if (mqtt.connected()) {
+      DynamicJsonDocument doc(256);
+      doc["event"] = "admin_access_denied";
+      doc["timestamp"] = millis() - systemStartTime;
+      
+      char buffer[256];
+      size_t n = serializeJson(doc, buffer);
+      mqtt.publish(mqtt_topic_status, buffer, n);
+    }
+    
     delay(2000);
     displayWelcomeScreen();
   }
@@ -372,6 +591,20 @@ void addEmployee() {
     lcd.setCursor(0, 2);
     lcd.print("Name: " + empName);
     playSuccessSound();
+    
+    // Notify MQTT server about new employee
+    if (mqtt.connected()) {
+      DynamicJsonDocument doc(256);
+      doc["event"] = "employee_added";
+      doc["id"] = empId;
+      doc["name"] = empName;
+      doc["timestamp"] = millis() - systemStartTime;
+      
+      char buffer[256];
+      size_t n = serializeJson(doc, buffer);
+      mqtt.publish(mqtt_topic_status, buffer, n);
+    }
+    
     delay(3000);
   } else {
     lcd.clear();
@@ -396,8 +629,11 @@ void deleteEmployee() {
   
   // Find and remove employee
   bool found = false;
+  String deletedName = "";
+  
   for (int i = 0; i < employeeCount; i++) {
     if (employees[i].id == empId) {
+      deletedName = String(employees[i].name);
       // Delete fingerprint from sensor
       finger.deleteModel(empId);
       
@@ -417,6 +653,19 @@ void deleteEmployee() {
     lcd.setCursor(0, 0);
     lcd.print("Employee Deleted!");
     playSuccessSound();
+    
+    // Notify MQTT server about employee deletion
+    if (mqtt.connected()) {
+      DynamicJsonDocument doc(256);
+      doc["event"] = "employee_deleted";
+      doc["id"] = empId;
+      doc["name"] = deletedName;
+      doc["timestamp"] = millis() - systemStartTime;
+      
+      char buffer[256];
+      size_t n = serializeJson(doc, buffer);
+      mqtt.publish(mqtt_topic_status, buffer, n);
+    }
   } else {
     lcd.clear();
     lcd.setCursor(0, 0);
@@ -466,15 +715,42 @@ void generateReport() {
                   hours, minutes, seconds);
   }
   
-  lcd.setCursor(0, 3);
-  lcd.print("Check Serial Monitor");
-  playSuccessSound();
+  // Send report data to MQTT
+  if (mqtt.connected()) {
+    DynamicJsonDocument doc(512);
+    doc["event"] = "report_generated";
+    doc["timestamp"] = millis() - systemStartTime;
+    doc["employee_count"] = employeeCount;
+    doc["record_count"] = attendanceCount;
+    
+    char buffer[512];
+    size_t n = serializeJson(doc, buffer);
+    mqtt.publish(mqtt_topic_status, buffer, n);
+    
+    // Ask if user wants to sync all data
+    lcd.setCursor(0, 3);
+    lcd.print("1=Sync All 9=Return");
+    
+    while (true) {
+      char key = customKeypad.getKey();
+      if (key == '1') {
+        syncAttendanceData();
+        break;
+      } else if (key == '9') {
+        break;
+      }
+      delay(50);
+    }
+  } else {
+    lcd.setCursor(0, 3);
+    lcd.print("Check Serial Monitor");
+    delay(5000);
+  }
   
-  delay(5000);
   displayAdminMenu();
 }
 
-// Enhanced processAttendance function with better error handling
+// Modified processAttendance function with MQTT data sending
 void processAttendance(int fingerprintId) {
   Serial.print("Fingerprint detected with ID: ");
   Serial.println(fingerprintId);
@@ -503,6 +779,18 @@ void processAttendance(int fingerprintId) {
     // Log the unauthorized attempt
     Serial.println("UNAUTHORIZED ACCESS ATTEMPT - Fingerprint ID: " + String(fingerprintId));
     
+    // Send unauthorized access attempt to MQTT
+    if (mqtt.connected()) {
+      DynamicJsonDocument doc(256);
+      doc["event"] = "unauthorized_access";
+      doc["fingerprint_id"] = fingerprintId;
+      doc["timestamp"] = millis() - systemStartTime;
+      
+      char buffer[256];
+      size_t n = serializeJson(doc, buffer);
+      mqtt.publish(mqtt_topic_status, buffer, n);
+    }
+    
     // Play extended error sound for security alert
     playUnauthorizedSound();
     delay(4000); // Show error message longer
@@ -524,16 +812,20 @@ void processAttendance(int fingerprintId) {
   lcd.setCursor(0, 1);
   lcd.print("Welcome " + String(emp->name));
   
+  const char* actionType;
+  
   if (isCheckIn) {
     emp->lastCheckIn = currentTime;
     lcd.setCursor(0, 2);
     lcd.print("CHECK IN");
-    logAttendance(emp->id, emp->name, "CHECK_IN", currentTime);
+    actionType = "CHECK_IN";
+    logAttendance(emp->id, emp->name, actionType, currentTime);
   } else {
     emp->lastCheckOut = currentTime;
     lcd.setCursor(0, 2);
     lcd.print("CHECK OUT");
-    logAttendance(emp->id, emp->name, "CHECK_OUT", currentTime);
+    actionType = "CHECK_OUT";
+    logAttendance(emp->id, emp->name, actionType, currentTime);
   }
   
   // Display relative time since system start
@@ -544,6 +836,25 @@ void processAttendance(int fingerprintId) {
   
   lcd.setCursor(0, 3);
   lcd.printf("Time: %02d:%02d:%02d", hours, minutes, seconds);
+  
+  // Send attendance data to MQTT
+  if (mqtt.connected()) {
+    DynamicJsonDocument doc(384);
+    doc["event"] = "attendance";
+    doc["id"] = emp->id;
+    doc["name"] = emp->name;
+    doc["action"] = actionType;
+    doc["timestamp"] = currentTime - systemStartTime;
+    doc["device_time"] = String(hours) + ":" + String(minutes) + ":" + String(seconds);
+    
+    char buffer[384];
+    size_t n = serializeJson(doc, buffer);
+    mqtt.publish(mqtt_topic_attendance, buffer, n);
+    
+    // Also notify with brief status message
+    String statusMsg = String(emp->name) + " " + String(actionType);
+    mqtt.publish(mqtt_topic_status, statusMsg.c_str());
+  }
   
   saveEmployeeData();
   playAccessGrantedSound();
@@ -741,6 +1052,12 @@ bool enrollFingerprint(int id) {
   if (p == FINGERPRINT_OK) {
     lcd.setCursor(0, 1);
     lcd.print("Stored successfully!");
+    
+    // Notify MQTT that a new fingerprint was enrolled
+    if (mqtt.connected()) {
+      mqtt.publish(mqtt_topic_status, String("New fingerprint enrolled, ID: " + String(id)).c_str());
+    }
+    
     return true;
   } else {
     lcd.setCursor(0, 1);
@@ -812,6 +1129,20 @@ int getFingerprintID() {
     if (finger.confidence < 50) {
       Serial.println("Low confidence match - access denied");
       showFingerprintError("Low Confidence");
+      
+      // Notify MQTT server about low confidence match
+      if (mqtt.connected()) {
+        DynamicJsonDocument doc(256);
+        doc["event"] = "low_confidence_match";
+        doc["fingerprint_id"] = finger.fingerID;
+        doc["confidence"] = finger.confidence;
+        doc["timestamp"] = millis() - systemStartTime;
+        
+        char buffer[256];
+        size_t n = serializeJson(doc, buffer);
+        mqtt.publish(mqtt_topic_status, buffer, n);
+      }
+      
       return -2;
     }
     
@@ -840,6 +1171,18 @@ void showFingerprintError(String errorMsg) {
   lcd.print(errorMsg);
   lcd.setCursor(0, 2);
   lcd.print("Try Again");
+  
+  // Notify MQTT server about fingerprint errors
+  if (mqtt.connected()) {
+    DynamicJsonDocument doc(256);
+    doc["event"] = "fingerprint_error";
+    doc["error"] = errorMsg;
+    doc["timestamp"] = millis() - systemStartTime;
+    
+    char buffer[256];
+    size_t n = serializeJson(doc, buffer);
+    mqtt.publish(mqtt_topic_status, buffer, n);
+  }
   
   playErrorSound();
   delay(2000);
@@ -892,6 +1235,12 @@ void exitAdminMode() {
   lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print("Exiting Admin Mode");
+  
+  // Notify MQTT server about exiting admin mode
+  if (mqtt.connected()) {
+    mqtt.publish(mqtt_topic_status, "{\"status\":\"admin_mode_exited\"}", false);
+  }
+  
   delay(2000);
   displayWelcomeScreen();
 }
