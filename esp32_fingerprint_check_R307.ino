@@ -19,6 +19,9 @@ const char* mqtt_client_id = "ESP32_Fingerprint_System";
 const char* mqtt_topic_attendance = "fingerprint/attendance";
 const char* mqtt_topic_status = "fingerprint/status";
 const char* mqtt_topic_command = "fingerprint/command";
+// --- ADDED central-authority topics ---
+const char* TOPIC_SCAN   = "fingerprint/scan";
+const char* TOPIC_ACCESS = "fingerprint/access";
 
 WiFiClient espClient;
 PubSubClient mqtt(espClient);
@@ -44,23 +47,23 @@ Adafruit_Fingerprint finger = Adafruit_Fingerprint(&mySerial);
 
 // Keypad setup (4x3 matrix)
 const byte ROWS = 4;
-const byte COLS = 3;
+const byte COLS = 4;
 char hexaKeys[ROWS][COLS] = {
-  {'1','2','3'},
-  {'4','5','6'}, 
-  {'7','8','9'},
-  {'*','0','#'}
+  {'1','2','3','A'},
+  {'4','5','6','B'}, 
+  {'7','8','9','C'},
+  {'*','0','#','D'}
 };
 
 // Define keypad pins (4x3 matrix)
 byte rowPins[ROWS] = {13, 12, 14, 27}; // GPIO pins for rows
-byte colPins[COLS] = {26, 25, 23}; // GPIO pins for columns
+byte colPins[COLS] = {26, 25, 32, 33}; // GPIO pins for columns
 
 Keypad customKeypad = Keypad(makeKeymap(hexaKeys), rowPins, colPins, ROWS, COLS);
 
 // System variables
 String inputPassword = "";
-String adminPassword = "1214"; // Admin password
+String adminPassword = "1234"; // Admin password
 bool adminMode = false;
 unsigned long lastActivity = 0;
 const unsigned long TIMEOUT = 30000; // 30 seconds timeout
@@ -92,6 +95,16 @@ int employeeCount = 0;
 #define EEPROM_SIZE 4096  // Increased size for attendance records
 #define EMPLOYEE_DATA_START 0
 #define ATTENDANCE_DATA_START 2048  // Start attendance data at offset 2048
+
+// --- ADDED central-authority state ---
+bool  waitingForResponse = false;
+int   lastFingerprintId  = -1;
+int   lastConfidence     = 0;
+unsigned long responseTimer = 0;
+const unsigned long RESPONSE_TIMEOUT = 5000; // ms
+
+// --- ADD THIS FORWARD DECLARATION ---
+void setupMqtt();
 
 void setup() {
   Serial.begin(115200);
@@ -141,7 +154,9 @@ void setup() {
 
     // Setup MQTT connection
     setupMqtt();
-    
+    // Subscribe to central authority access topic
+    mqtt.subscribe(TOPIC_ACCESS);
+
     playSuccessSound();
     delay(4000);
   } else {
@@ -233,14 +248,24 @@ void loop() {
     handleKeypadInput(customKey);
   }
   
-  // Check fingerprint for attendance
+  // --- central-authority flow ---
+  if (waitingForResponse) {
+    if (millis() - responseTimer > RESPONSE_TIMEOUT) {
+      waitingForResponse = false;
+      denyAccess("Timeout");
+    }
+    return;
+  }
   if (!adminMode) {
     int fingerprintResult = getFingerprintID();
-    
     if (fingerprintResult >= 0) {
-      // Valid fingerprint ID found
-      lastActivity = millis();
-      processAttendance(fingerprintResult);
+      lastFingerprintId = fingerprintResult;
+      lastConfidence    = finger.confidence;
+      publishScanEvent(fingerprintResult, lastConfidence);
+      waitingForResponse = true;
+      responseTimer      = millis();
+      lcd.clear(); lcd.setCursor(0,0);
+      lcd.print("Checking server...");
     } else if (fingerprintResult == -3) {
       // Fingerprint detected but not in database
       lastActivity = millis();
@@ -279,79 +304,37 @@ void loop() {
   delay(200);
 }
 
-// MQTT Setup Function
-void setupMqtt() {
-  mqtt.setServer(mqtt_server, mqtt_port);
-  mqtt.setCallback(mqttCallback);
-  
-  // Try to connect initially
-  reconnectMqtt();
+// --- ADDED --- Publish fingerprint scan to Pi
+void publishScanEvent(int fid, int conf) {
+  DynamicJsonDocument doc(128);
+  doc["fingerprint_id"] = fid;
+  doc["confidence"]     = conf;
+  char buf[128];
+  size_t n = serializeJson(doc, buf);
+  mqtt.publish(TOPIC_SCAN, buf, n);
 }
 
-// MQTT Reconnection Logic
-bool reconnectMqtt() {
-  unsigned long now = millis();
-  if (now - lastMqttReconnectAttempt < MQTT_RECONNECT_INTERVAL) {
-    return false; // Not time to try reconnecting yet
-  }
-  
-  lastMqttReconnectAttempt = now;
-  
-  Serial.print("Attempting MQTT connection...");
-  lcd.setCursor(0, 3);
-  lcd.print("MQTT Connecting...  ");
-  
-  // Create a random client ID
-  String clientId = mqtt_client_id;
-  clientId += String(random(0xffff), HEX);
-  
-  // Attempt to connect
-  if (mqtt.connect(clientId.c_str(), mqtt_user, mqtt_password)) {
-    Serial.println("connected");
-    lcd.setCursor(0, 3);
-    lcd.print("MQTT Connected      ");
-    
-    // Subscribe to command topic
-    mqtt.subscribe(mqtt_topic_command);
-    
-    // Send birth message
-    mqtt.publish(mqtt_topic_status, "{\"status\":\"online\",\"device\":\"ESP32_Fingerprint_System\"}", true);
-    
-    delay(1000); // Show the message briefly
-    displayWelcomeScreen();
-    return true;
-  } else {
-    Serial.print("failed, rc=");
-    Serial.print(mqtt.state());
-    Serial.println(" try again in 5 seconds");
-    lcd.setCursor(0, 3);
-    lcd.print("MQTT Failed        ");
-    return false;
-  }
-}
-
-// MQTT Callback Function for receiving commands
+// --- MODIFIED --- MQTT Callback Function for receiving commands and access decisions
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
-  Serial.print("Message arrived [");
-  Serial.print(topic);
-  Serial.print("] ");
-  
-  char message[length + 1];
-  for (unsigned int i = 0; i < length; i++) {
-    message[i] = (char)payload[i];
-    Serial.print((char)payload[i]);
+  String t = String(topic);
+  if (t == TOPIC_ACCESS) {
+    DynamicJsonDocument doc(256);
+    deserializeJson(doc, payload, length);
+    String result = doc["result"].as<String>();
+    waitingForResponse = false;
+    if (result == "access_granted") {
+      grantAccess(doc["name"].as<String>(), doc["role"].as<String>());
+    } else {
+      denyAccess(doc["reason"].as<String>());
+    }
+    return;
   }
-  message[length] = '\0';
-  Serial.println();
-  
-  // Process incoming commands
+  // ...existing code for command topic...
   if (strcmp(topic, mqtt_topic_command) == 0) {
     DynamicJsonDocument doc(512);
-    DeserializationError error = deserializeJson(doc, message);
-    
+    DeserializationError error = deserializeJson(doc, payload, length);
     if (!error) {
       String command = doc["command"].as<String>();
-      
       if (command == "status") {
         sendSystemStatus();
       }
@@ -372,7 +355,41 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   }
 }
 
-// Function to send system status to MQTT server
+// --- ADDED --- Grant access (unlock, display)
+void grantAccess(const String& name, const String& role) {
+  lcd.clear();
+  lcd.setCursor(0,0); lcd.print("GRANTED: " + name);
+  lcd.setCursor(0,1); lcd.print("Role: " + role);
+  // activate relay
+  digitalWrite(RELAY, HIGH);
+  delay(3000);
+  digitalWrite(RELAY, LOW);
+  delay(500);
+  displayWelcomeScreen();
+}
+
+// --- ADDED --- Deny access (sound, display)
+void denyAccess(const String& reason) {
+  lcd.clear();
+  lcd.setCursor(0,0); lcd.print("ACCESS DENIED");
+  lcd.setCursor(0,1); lcd.print(reason);
+  playErrorSound();
+  delay(2000);
+  displayWelcomeScreen();
+}
+
+// --- ADDED --- MQTT reconnect helper
+void reconnectMqtt() {
+  while (!mqtt.connected()) {
+    if (mqtt.connect(mqtt_client_id, mqtt_user, mqtt_password)) {
+      mqtt.subscribe(mqtt_topic_command);
+      mqtt.subscribe(TOPIC_ACCESS);
+    } else {
+      delay(5000);
+    }
+  }
+}
+
 void sendSystemStatus() {
   if (!mqtt.connected()) return;
   
@@ -1274,4 +1291,12 @@ void playAccessGrantedSound() {
     digitalWrite(BUZZER, LOW);
     delay(100);
   }
+}
+
+// MQTT Setup Function
+void setupMqtt() {
+  mqtt.setServer(mqtt_server, mqtt_port);
+  mqtt.setCallback(mqttCallback);
+  // Try to connect initially
+  reconnectMqtt();
 }
