@@ -15,8 +15,8 @@ cursor = conn.cursor()
 # Khi kết nối MQTT thành công
 def on_connect(client, userdata, flags, reason_code, properties):
     print("MQTT connected with result code", reason_code)
-    client.subscribe("fingerprint/attendance")
-    print("Subscribed to fingerprint/attendance")
+    client.subscribe("fingerprint/scan")
+    print("Subscribed to fingerprint/scan")
     print("="*50)
 
 # Khi có message
@@ -26,66 +26,121 @@ def on_message(client, userdata, msg):
     
     try:
         data = json.loads(msg.payload)
-        user_id = data["user_id"]
-        check_type = data["check_type"]
-
-        # Query thông tin user
-        cursor.execute("""
-            SELECT name, role, department, room 
-            FROM users 
-            WHERE id = %s
-        """, (user_id,))
         
-        user_info = cursor.fetchone()
-        
-        if user_info:
-            name, role, department, room = user_info
+        # Check if this is a scan event from fingerprint/scan topic
+        if "fingerprint_id" in data:
+            fingerprint_id = data["fingerprint_id"]
+            confidence = data["confidence"]
             
-            # Hiển thị thông tin đẹp
-            print("🔍 USER DETECTED")
-            print(f"   👤 Name: {name}")
-            print(f"   💼 Role: {role}")
-            print(f"   🏢 Department: {department}") 
-            print(f"   🚪 Room: {room}")
-            print(f"   📍 Action: {check_type.upper()}")
-            
-            # Insert checkin log
+            # Query thông tin user
             cursor.execute("""
-                INSERT INTO checkin_logs (user_id, check_type)
-                VALUES (%s, %s)
-            """, (user_id, check_type))
-            conn.commit()
+                SELECT name, role, department, room 
+                FROM users 
+                WHERE id = %s
+            """, (fingerprint_id,))
             
-            # Gửi notification trở lại ESP32 (tùy chọn)
-            response = {
-                "status": "success",
-                "user_name": name,
-                "role": role,
-                "room": room
-            }
-            client.publish("fingerprint/response", json.dumps(response))
+            user_info = cursor.fetchone()
             
-            print("✅ Logged successfully!")
+            if user_info:
+                name, role, department, room = user_info
+                
+                # Hiển thị thông tin đẹp
+                print("🔍 USER DETECTED")
+                print(f"   👤 Name: {name}")
+                print(f"   💼 Role: {role}")
+                print(f"   🏢 Department: {department}") 
+                print(f"   🚪 Room: {room}")
+                
+                # Insert checkin log
+                check_type = "check-in"  # Default to check-in
+                cursor.execute("""
+                    INSERT INTO checkin_logs (user_id, check_type)
+                    VALUES (%s, %s)
+                """, (fingerprint_id, check_type))
+                conn.commit()
+                
+                # Gửi response trở lại ESP32 với topic fingerprint/access
+                response = {
+                    "result": "access_granted",
+                    "user_name": name,
+                    "role": role
+                }
+                client.publish("fingerprint/access", json.dumps(response))
+                
+                print("✅ Access granted and logged successfully!")
+                
+            else:
+                print(f"❌ User ID {fingerprint_id} not found in database")
+                
+                # Gửi lỗi trở lại ESP32 với topic fingerprint/access
+                error_response = {
+                    "result": "access_denied",
+                    "message": "User not found in database"
+                }
+                client.publish("fingerprint/access", json.dumps(error_response))
+                
+        # Handle original fingerprint/attendance messages for backward compatibility
+        elif "user_id" in data:
+            user_id = data["user_id"]
+            check_type = data["check_type"]
+
+            # Query thông tin user
+            cursor.execute("""
+                SELECT name, role, department, room 
+                FROM users 
+                WHERE id = %s
+            """, (user_id,))
             
-        else:
-            print(f"❌ User ID {user_id} not found in database")
+            user_info = cursor.fetchone()
             
-            # Gửi lỗi trở lại ESP32
-            error_response = {
-                "status": "error",
-                "message": "User not found"
-            }
-            client.publish("fingerprint/response", json.dumps(error_response))
-            
+            if user_info:
+                name, role, department, room = user_info
+                
+                # Hiển thị thông tin đẹp
+                print("🔍 USER DETECTED")
+                print(f"   👤 Name: {name}")
+                print(f"   💼 Role: {role}")
+                print(f"   🏢 Department: {department}") 
+                print(f"   🚪 Room: {room}")
+                print(f"   📍 Action: {check_type.upper()}")
+                
+                # Insert checkin log
+                cursor.execute("""
+                    INSERT INTO checkin_logs (user_id, check_type)
+                    VALUES (%s, %s)
+                """, (user_id, check_type))
+                conn.commit()
+                
+                # Gửi notification trở lại ESP32 (tùy chọn)
+                response = {
+                    "status": "success",
+                    "user_name": name,
+                    "role": role,
+                    "room": room
+                }
+                client.publish("fingerprint/response", json.dumps(response))
+                
+                print("✅ Logged successfully!")
+                
+            else:
+                print(f"❌ User ID {user_id} not found in database")
+                
+                # Gửi lỗi trở lại ESP32
+                error_response = {
+                    "status": "error",
+                    "message": "User not found"
+                }
+                client.publish("fingerprint/response", json.dumps(error_response))
+                
     except Exception as e:
         print(f"❌ Error: {e}")
         conn.rollback()
         
         error_response = {
-            "status": "error", 
+            "result": "access_denied", 
             "message": "System error"
         }
-        client.publish("fingerprint/response", json.dumps(error_response))
+        client.publish("fingerprint/access", json.dumps(error_response))
     
     print("-" * 50)
 
