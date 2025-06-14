@@ -32,27 +32,28 @@ def on_message(client, userdata, msg):
             fingerprint_id = data["fingerprint_id"]
             confidence = data["confidence"]
             
-            # Query thông tin user
+            # Query thông tin user với join tables
             cursor.execute("""
-                SELECT name, role, department, room 
-                FROM users 
-                WHERE id = %s
+                SELECT u.name, r.name as role, d.name as department 
+                FROM users u
+                LEFT JOIN roles r ON u.role_id = r.id
+                LEFT JOIN departments d ON u.department_id = d.id
+                WHERE u.id = %s
             """, (fingerprint_id,))
             
             user_info = cursor.fetchone()
             
             if user_info:
-                name, role, department, room = user_info
+                name, role, department = user_info
                 
                 # Hiển thị thông tin đẹp
                 print("🔍 USER DETECTED")
                 print(f"   👤 Name: {name}")
                 print(f"   💼 Role: {role}")
                 print(f"   🏢 Department: {department}") 
-                print(f"   🚪 Room: {room}")
                 
                 # Insert checkin log
-                check_type = "check-in"  # Default to check-in
+                check_type = "checkin"  # Default to checkin
                 cursor.execute("""
                     INSERT INTO checkin_logs (user_id, check_type)
                     VALUES (%s, %s)
@@ -63,7 +64,7 @@ def on_message(client, userdata, msg):
                 response = {
                     "result": "access_granted",
                     "user_name": name,
-                    "role": role
+                    "role": role if role else "Unknown"
                 }
                 client.publish("fingerprint/access", json.dumps(response))
                 
@@ -84,24 +85,25 @@ def on_message(client, userdata, msg):
             user_id = data["user_id"]
             check_type = data["check_type"]
 
-            # Query thông tin user
+            # Query thông tin user với join tables
             cursor.execute("""
-                SELECT name, role, department, room 
-                FROM users 
-                WHERE id = %s
+                SELECT u.name, r.name as role, d.name as department 
+                FROM users u
+                LEFT JOIN roles r ON u.role_id = r.id
+                LEFT JOIN departments d ON u.department_id = d.id
+                WHERE u.id = %s
             """, (user_id,))
             
             user_info = cursor.fetchone()
             
             if user_info:
-                name, role, department, room = user_info
+                name, role, department = user_info
                 
                 # Hiển thị thông tin đẹp
                 print("🔍 USER DETECTED")
                 print(f"   👤 Name: {name}")
                 print(f"   💼 Role: {role}")
                 print(f"   🏢 Department: {department}") 
-                print(f"   🚪 Room: {room}")
                 print(f"   📍 Action: {check_type.upper()}")
                 
                 # Insert checkin log
@@ -115,8 +117,7 @@ def on_message(client, userdata, msg):
                 response = {
                     "status": "success",
                     "user_name": name,
-                    "role": role,
-                    "room": room
+                    "role": role if role else "Unknown"
                 }
                 client.publish("fingerprint/response", json.dumps(response))
                 
@@ -138,7 +139,7 @@ def on_message(client, userdata, msg):
         
         error_response = {
             "result": "access_denied", 
-            "message": "System error"
+            "message": f"System error: {str(e)}"
         }
         client.publish("fingerprint/access", json.dumps(error_response))
     
