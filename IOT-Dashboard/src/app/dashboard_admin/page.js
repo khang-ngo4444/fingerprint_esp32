@@ -93,6 +93,15 @@ const ProfileDashboard = () => {  // Create refs for form inputs
       .catch(err => console.error('Failed to fetch roles:', err));
   }, []);
 
+  // Fetch departments from API
+  const [departments, setDepartments] = useState([]);
+  useEffect(() => {
+    fetch('/api/departments')
+      .then(res => res.json())
+      .then(data => setDepartments(data))
+      .catch(err => console.error('Failed to fetch departments:', err));
+  }, []);
+
   const filteredProfiles = useMemo(() =>
     profiles.filter(profile =>
       profile.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -258,13 +267,19 @@ const ProfileDashboard = () => {  // Create refs for form inputs
                 ))}
               </select>
             </div>
-            <FormInput 
-              label="Department" 
-              placeholder="Engineering" 
-              value={editForm.department || ''} 
-              onChange={e => handleFormChange('department', e.target.value)}
-              inputRef={departmentInputRef}
-            />
+            <div>
+              <label className="block text-sm font-medium text-slate-300 mb-1">Department</label>
+              <select
+                value={editForm.department_id || ''}
+                onChange={e => handleFormChange('department_id', e.target.value)}
+                className="w-full p-2 bg-slate-900 border border-slate-600 rounded-md text-slate-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              >
+                <option value="">Select department</option>
+                {departments.map(dep => (
+                  <option key={dep.id} value={dep.id}>{dep.name}</option>
+                ))}
+              </select>
+            </div>
           </div>
           <div className="flex justify-end space-x-3 mt-6 pt-6 border-t border-slate-700">
             <button onClick={closeModals} className="px-4 py-2 bg-slate-700 text-slate-200 rounded-lg hover:bg-slate-600 transition-colors">Cancel</button>

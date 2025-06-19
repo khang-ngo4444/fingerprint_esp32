@@ -40,11 +40,33 @@ export async function GET(req) {
 export async function POST(req) {
   try {
     const body = await req.json();
-    const { name, email, role_id, department_id } = body;
-    const result = await pool.query(
-      'INSERT INTO users (name, email, role_id, department_id) VALUES ($1, $2, $3, $4) RETURNING *',
-      [name, email, role_id, department_id]
-    );
+    const { id, name, email, role_id, department_id } = body;
+    let result;
+    if (id) {
+      // Insert with provided ID and adjust sequence
+      await pool.query(
+        'INSERT INTO users (id, name, email, role_id, department_id) VALUES ($1, $2, $3, $4, $5)',
+        [id, name, email, role_id, department_id]
+      );
+      // Update serial sequence to the max ID
+      await pool.query(
+        "SELECT setval(pg_get_serial_sequence('users','id'), (SELECT MAX(id) FROM users));"
+      );
+      // Fetch the inserted row with joins
+      result = await pool.query(
+        `SELECT u.id, u.name, u.email, u.role_id, r.name AS role, u.department_id, d.name AS department
+         FROM users u
+         LEFT JOIN roles r ON u.role_id = r.id
+         LEFT JOIN departments d ON u.department_id = d.id
+         WHERE u.id = $1`,
+        [id]
+      );
+    } else {
+      result = await pool.query(
+        'INSERT INTO users (name, email, role_id, department_id) VALUES ($1, $2, $3, $4) RETURNING *',
+        [name, email, role_id, department_id]
+      );
+    }
     return NextResponse.json(result.rows[0]);
   } catch (err) {
     return NextResponse.json({ error: err.message }, { status: 500 });
