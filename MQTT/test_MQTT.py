@@ -46,14 +46,27 @@ def on_message(client, userdata, msg):
             if user_info:
                 name, role, department = user_info
                 
+                # Xác định trạng thái checkin/checkout
+                cursor.execute("""
+                    SELECT check_type FROM checkin_logs
+                    WHERE user_id = %s
+                    ORDER BY timestamp DESC, id DESC
+                    LIMIT 1
+                """, (fingerprint_id,))
+                last_log = cursor.fetchone()
+                if last_log and last_log[0] == "checkin":
+                    check_type = "checkout"
+                else:
+                    check_type = "checkin"
+                
                 # Hiển thị thông tin đẹp
                 print("🔍 USER DETECTED")
                 print(f"   👤 Name: {name}")
                 print(f"   💼 Role: {role}")
                 print(f"   🏢 Department: {department}") 
+                print(f"   📍 Status: {check_type.upper()}")
                 
                 # Insert checkin log
-                check_type = "checkin"  # Default to checkin
                 cursor.execute("""
                     INSERT INTO checkin_logs (user_id, check_type)
                     VALUES (%s, %s)
@@ -64,7 +77,8 @@ def on_message(client, userdata, msg):
                 response = {
                     "result": "access_granted",
                     "name": name,
-                    "role": role if role else "Unknown"
+                    "role": role if role else "Unknown",
+                    "status": check_type
                 }
                 client.publish("fingerprint/access", json.dumps(response))
                 
