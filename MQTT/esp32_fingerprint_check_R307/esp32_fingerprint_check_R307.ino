@@ -362,18 +362,40 @@ void grantAccess(const String& name, const String& role) {
     // ---> CHECK-IN segment
     allowCheckOut = true;
     checkInTime = millis();
+
+    // Publish check-in event to server via MQTT
+    DynamicJsonDocument doc(256);
+    doc["empId"] = lastFingerprintId;
+    doc["name"] = name;
+    doc["action"] = "IN";
+    doc["timestamp"] = (millis() - systemStartTime);
+    char buf[256];
+    size_t n = serializeJson(doc, buf);
+    mqtt.publish(mqtt_topic_attendance, buf, n);
+
     lcd.clear();
     lcd.setCursor(0, 0);
-    lcd.print("CHECK-IN OK: " + name);
+    lcd.print("CHECK-IN OK");
     lcd.setCursor(0, 1);
     lcd.print("Wait to Check-Out");
   } else {
     // ---> CHECK-OUT segment
     if (millis() - checkInTime >= CHECK_OUT_DELAY) {
       allowCheckOut = false;
+
+      // Publish check-out event to server via MQTT
+      DynamicJsonDocument doc(256);
+      doc["empId"] = lastFingerprintId;
+      doc["name"] = name;
+      doc["action"] = "OUT";
+      doc["timestamp"] = (millis() - systemStartTime);
+      char buf[256];
+      size_t n = serializeJson(doc, buf);
+      mqtt.publish(mqtt_topic_attendance, buf, n);
+
       lcd.clear();
       lcd.setCursor(0, 0);
-      lcd.print("CHECK-OUT OK: " + name);
+      lcd.print("CHECK-OUT OK ");
     } else {
       lcd.clear();
       lcd.setCursor(0, 0);
