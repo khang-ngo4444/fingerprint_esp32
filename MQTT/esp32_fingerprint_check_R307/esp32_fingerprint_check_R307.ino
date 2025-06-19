@@ -101,6 +101,10 @@ int   lastFingerprintId  = -1;
 int   lastConfidence     = 0;
 unsigned long responseTimer = 0;
 const unsigned long RESPONSE_TIMEOUT = 5000; // ms
+// Check-in/out debug variables
+bool allowCheckOut = false;
+unsigned long checkInTime = 0;
+const unsigned long CHECK_OUT_DELAY = 10000; // ms
 
 // --- ADD THIS FORWARD DECLARATION ---
 void setupMqtt();
@@ -353,9 +357,30 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 
 // --- ADDED --- Grant access (unlock, display)
 void grantAccess(const String& name, const String& role) {
-  lcd.clear();
-  lcd.setCursor(0,0); lcd.print("GRANTED: " + name);
-  lcd.setCursor(0,1); lcd.print("Role: " + role);
+  // CHECK-IN/CHECK-OUT debug
+  if (!allowCheckOut) {
+    // ---> CHECK-IN segment
+    allowCheckOut = true;
+    checkInTime = millis();
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("CHECK-IN OK: " + name);
+    lcd.setCursor(0, 1);
+    lcd.print("Wait to Check-Out");
+  } else {
+    // ---> CHECK-OUT segment
+    if (millis() - checkInTime >= CHECK_OUT_DELAY) {
+      allowCheckOut = false;
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("CHECK-OUT OK: " + name);
+    } else {
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Too early to Out");
+      return;
+    }
+  }
   // activate relay
   digitalWrite(RELAY, HIGH);
   delay(3000);
