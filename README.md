@@ -60,9 +60,6 @@ This project implements a complete attendance and access control solution with t
 - ESP32 GPIO13, 12, 14, 27 → Keypad Row pins (1-4)
 - ESP32 GPIO26, 25, 32, 33 → Keypad Column pins (1-4)
 
-### ESP32 to Relay
-- ESP32 GPIO33 → Relay IN
-
 ## Software Setup
 
 ### 1. ESP32 Setup
