@@ -6,8 +6,6 @@
 #include <PubSubClient.h> // Added for MQTT
 #include <ArduinoJson.h>  // Added for JSON formatting
 
-// Chức năng nhập vân tay được di chuyển sang file fingerprint_enrollment.ino
-// Khai báo các biến toàn cục sẽ được chia sẻ giữa các file
 // WiFi credentials
 const char* ssid = "VNUK4-10";
 const char* password = "Z@q12wsx";
@@ -22,7 +20,7 @@ const char* mqtt_topic_attendance = "fingerprint/attendance";
 const char* mqtt_topic_status = "fingerprint/status";
 const char* mqtt_topic_command = "fingerprint/command";
 // --- ADDED central-authority topics ---
-const char* TOPIC_SCAN = "fingerprint/scan";
+const char* TOPIC_SCAN   = "fingerprint/scan";
 const char* TOPIC_ACCESS = "fingerprint/access";
 
 WiFiClient espClient;
@@ -89,8 +87,7 @@ struct Employee {
 Employee employees[50]; // Support up to 50 employees
 int employeeCount = 0;
 
-// Buzzer and Relay pins (LEDs removed)
-#define BUZZER 27
+// Relay pin (Buzzer removed)
 #define RELAY 33 // For door lock
 
 // EEPROM addresses
@@ -99,16 +96,11 @@ int employeeCount = 0;
 #define ATTENDANCE_DATA_START 2048  // Start attendance data at offset 2048
 
 // --- ADDED central-authority state ---
-bool waitingForResponse = false;
-int lastFingerprintId = -1;
-int lastConfidence = 0;
+bool  waitingForResponse = false;
+int   lastFingerprintId  = -1;
+int   lastConfidence     = 0;
 unsigned long responseTimer = 0;
 const unsigned long RESPONSE_TIMEOUT = 5000; // ms
-
-// Function declarations from fingerprint_enrollment.ino
-void addEmployee();
-void deleteEmployee();
-bool enrollFingerprint(int id);
 
 // --- ADD THIS FORWARD DECLARATION ---
 void setupMqtt();
@@ -122,7 +114,7 @@ void setup() {
   lcd.clear();
   
   // Initialize pins
-  pinMode(BUZZER, OUTPUT);
+  // Buzzer pin initialization removed (sound disabled)
   pinMode(RELAY, OUTPUT);
   
   // Initial state
@@ -164,14 +156,12 @@ void setup() {
     // Subscribe to central authority access topic
     mqtt.subscribe(TOPIC_ACCESS);
 
-    playSuccessSound();
     delay(4000);
   } else {
     Serial.println("Failed to connect to WiFi.");
     lcd.clear();
     lcd.setCursor(0, 0);
     lcd.print("WiFi Connect Failed");
-    playErrorSound();
     delay(3000);
   }
   
@@ -219,8 +209,8 @@ void setup() {
   Serial.println("=== ESP32 AttendanceSystem ===");
   Serial.println("Commands:");
   Serial.println("• Scan fingerprint for attendance");
-  Serial.println("• Enter admin password + * for admin mode");
-  Serial.println("• Admin commands: 1*=Enroll Fingerprint, 2*=Delete, 3*=Report, 9*=Exit");
+  Serial.println("• Enter admin password + # for admin mode");
+  Serial.println("• Admin commands: 1#=Add Employee, 2#=Delete, 3#=Report, 9#=Exit");
   Serial.println("===============================");
   
   lastActivity = millis();
@@ -300,7 +290,6 @@ void loop() {
         mqtt.publish(mqtt_topic_status, buffer, n);
       }
       
-      playUnauthorizedSound();
       delay(4000);
       displayWelcomeScreen();
     }
@@ -311,17 +300,12 @@ void loop() {
   delay(200);
 }
 
-// --- SIMPLIFIED --- Publish fingerprint scan to Pi with ID focus
+// --- ADDED --- Publish fingerprint scan to Pi
 void publishScanEvent(int fid, int conf) {
-  DynamicJsonDocument doc(256);
+  DynamicJsonDocument doc(128);
   doc["fingerprint_id"] = fid;
   doc["confidence"]     = conf;
-  doc["device_id"]      = mqtt_client_id;
-  doc["timestamp"]      = millis() - systemStartTime;
-  
-  // We no longer need to check for local names as they'll come from server
-  
-  char buf[256];
+  char buf[128];
   size_t n = serializeJson(doc, buf);
   mqtt.publish(TOPIC_SCAN, buf, n);
 }
@@ -367,15 +351,13 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   }
 }
 
-// --- ADDED --- Grant access (unlock, display) - Enhanced for dashboard integration
+// --- ADDED --- Grant access (unlock, display)
 void grantAccess(const String& name, const String& role) {
   lcd.clear();
   lcd.setCursor(0,0); lcd.print("GRANTED: " + name);
   lcd.setCursor(0,1); lcd.print("Role: " + role);
-  lcd.setCursor(0,2); lcd.print("ID: " + String(lastFingerprintId));
   // activate relay
   digitalWrite(RELAY, HIGH);
-  playAccessGrantedSound();
   delay(3000);
   digitalWrite(RELAY, LOW);
   delay(500);
@@ -387,7 +369,6 @@ void denyAccess(const String& reason) {
   lcd.clear();
   lcd.setCursor(0,0); lcd.print("ACCESS DENIED");
   lcd.setCursor(0,1); lcd.print(reason);
-  playErrorSound();
   delay(2000);
   displayWelcomeScreen();
 }
@@ -462,7 +443,7 @@ void displayWelcomeScreen() {
   lcd.setCursor(0, 1);
   lcd.print("Scan Fingerprint");
   lcd.setCursor(0, 2);
-  lcd.print("Admin: Enter Code + *");
+  lcd.print("or Enter Admin Code");
   
   // Display system uptime instead of RTC time
   unsigned long uptime = (millis() - systemStartTime) / 1000;
@@ -500,7 +481,6 @@ void checkAdminPassword() {
     adminMode = true;
     Serial.println("Admin mode activated!");
     displayAdminMenu();
-    playSuccessSound();
     
     // Notify MQTT server about admin mode
     if (mqtt.connected()) {
@@ -511,7 +491,6 @@ void checkAdminPassword() {
     lcd.clear();
     lcd.setCursor(0, 0);
     lcd.print("ACCESS DENIED");
-    playErrorSound();
     
     // Notify MQTT server about failed admin access
     if (mqtt.connected()) {
@@ -535,11 +514,11 @@ void displayAdminMenu() {
   lcd.setCursor(0, 0);
   lcd.print("ADMIN MODE");
   lcd.setCursor(0, 1);
-  lcd.print("1*=Enroll Fingerprint");
+  lcd.print("1#=Add 2#=Delete");
   lcd.setCursor(0, 2);
-  lcd.print("2*=Delete 3*=Report");
+  lcd.print("3#=Report 4#=Reset");
   lcd.setCursor(0, 3);
-  lcd.print("9*=Exit Admin");
+  lcd.print("9#=Exit Admin");
 }
 
 void handleAdminCommand() {
@@ -551,6 +530,10 @@ void handleAdminCommand() {
   }
   else if (inputPassword == "3") {
     generateReport();
+  }
+  else if (inputPassword == "4") {
+    // Added new option for resetting the fingerprint sensor
+    resetFingerprintSensor();
   }
   else if (inputPassword == "9") {
     exitAdminMode();
@@ -565,7 +548,138 @@ void handleAdminCommand() {
   inputPassword = "";
 }
 
-// addEmployee() và deleteEmployee() đã được di chuyển sang file fingerprint_enrollment.ino
+void addEmployee() {
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("ADD EMPLOYEE");
+  
+  // Get employee ID
+  lcd.setCursor(0, 1);
+  lcd.print("Enter ID (1-127)#:");
+  
+  String idInput = getNumericInput();
+  int empId = idInput.toInt();
+  
+  if (empId < 1 || empId > 127) {
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Invalid ID!");
+    delay(2000);
+    displayAdminMenu();
+    return;
+  }
+  
+  // Use a default name based on ID
+  String empName = "Emp" + String(empId);
+  
+  // Enroll fingerprint
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Place finger on");
+  lcd.setCursor(0, 1);
+  lcd.print("sensor...");
+  
+  if (enrollFingerprint(empId)) {
+    // Save employee data
+    employees[employeeCount].id = empId;
+    strncpy(employees[employeeCount].name, empName.c_str(), 19);
+    employees[employeeCount].name[19] = '\0';
+    employees[employeeCount].isActive = true;
+    employees[employeeCount].lastCheckIn = 0;
+    employees[employeeCount].lastCheckOut = 0;
+    employeeCount++;
+    
+    saveEmployeeData();
+    
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Employee Added!");
+    lcd.setCursor(0, 1);
+    lcd.print("ID: " + String(empId));
+    lcd.setCursor(0, 2);
+    lcd.print("Name: " + empName);
+    
+    // Notify MQTT server about new employee
+    if (mqtt.connected()) {
+      DynamicJsonDocument doc(256);
+      doc["event"] = "employee_added";
+      doc["id"] = empId;
+      doc["name"] = empName;
+      doc["timestamp"] = millis() - systemStartTime;
+      
+      char buffer[256];
+      size_t n = serializeJson(doc, buffer);
+      mqtt.publish(mqtt_topic_status, buffer, n);
+    }
+    
+    delay(3000);
+  } else {
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Failed to add!");
+    delay(2000);
+  }
+  
+  displayAdminMenu();
+}
+
+void deleteEmployee() {
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("DELETE EMPLOYEE");
+  lcd.setCursor(0, 1);
+  lcd.print("Enter ID#:");
+  
+  String idInput = getNumericInput();
+  int empId = idInput.toInt();
+  
+  // Find and remove employee
+  bool found = false;
+  String deletedName = "";
+  
+  for (int i = 0; i < employeeCount; i++) {
+    if (employees[i].id == empId) {
+      deletedName = String(employees[i].name);
+      // Delete fingerprint from sensor
+      finger.deleteModel(empId);
+      
+      // Shift array to remove employee
+      for (int j = i; j < employeeCount - 1; j++) {
+        employees[j] = employees[j + 1];
+      }
+      employeeCount--;
+      found = true;
+      break;
+    }
+  }
+  
+  if (found) {
+    saveEmployeeData();
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Employee Deleted!");
+    
+    // Notify MQTT server about employee deletion
+    if (mqtt.connected()) {
+      DynamicJsonDocument doc(256);
+      doc["event"] = "employee_deleted";
+      doc["id"] = empId;
+      doc["name"] = deletedName;
+      doc["timestamp"] = millis() - systemStartTime;
+      
+      char buffer[256];
+      size_t n = serializeJson(doc, buffer);
+      mqtt.publish(mqtt_topic_status, buffer, n);
+    }
+  } else {
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Employee Not Found!");
+  }
+  
+  delay(2000);
+  displayAdminMenu();
+}
 
 void generateReport() {
   lcd.clear();
@@ -681,8 +795,7 @@ void processAttendance(int fingerprintId) {
       mqtt.publish(mqtt_topic_status, buffer, n);
     }
     
-    // Play extended error sound for security alert
-    playUnauthorizedSound();
+    // Sound alert removed
     delay(4000); // Show error message longer
     displayWelcomeScreen();
     return;
@@ -747,7 +860,6 @@ void processAttendance(int fingerprintId) {
   }
   
   saveEmployeeData();
-  playAccessGrantedSound();
   
   // Activate relay for door unlock
   digitalWrite(RELAY, HIGH);
@@ -789,20 +901,24 @@ void logAttendance(int empId, const char* empName, const char* action, unsigned 
 }
 
 String getNumericInput() {
+  // Simplified input for ID numbers only
   String input = "";
   while (true) {
     char key = customKeypad.getKey();
     if (key) {
-      if (key == '*') {
-        break; // Changed from # to * for consistency
+      if (key == '#') {
+        // Confirm input
+        break;
       } else if (key >= '0' && key <= '9') {
+        // Add digit to input
         input += key;
         lcd.print(key);
-      } else if (key == '#') {
+      } else if (key == '*') {
+        // Clear input
         input = "";
         lcd.clear();
         lcd.setCursor(0, 1);
-        lcd.print("Cleared, re-enter:");
+        lcd.print("Cleared, re-enter ID:");
       }
     }
     delay(50);
@@ -810,34 +926,240 @@ String getNumericInput() {
   return input;
 }
 
-// Removed text input function as names will come from dashboard
-String getTextInput() {
-  // Simply return empty string - names will be updated from dashboard
-  return "";
-}
+// This function has been removed as we're using ID-based naming
+// The simplified system no longer needs text input
 
-// enrollFingerprint() đã được di chuyển sang file fingerprint_enrollment.ino
+bool enrollFingerprint(int id) {
+  Serial.print("Enrolling fingerprint ID #");
+  Serial.println(id);
+  
+  int p = -1;
+  int timeoutCounter = 0;
+  const int MAX_TIMEOUT = 200; // 10 seconds timeout (50ms * 200)
+  
+  // Check if ID already exists and delete it if necessary
+  if (finger.loadModel(id) == FINGERPRINT_OK) {
+    Serial.println("Existing model found, deleting...");
+    finger.deleteModel(id);
+    delay(500);
+  }
+  
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Place finger");
+  lcd.setCursor(0, 1);
+  lcd.print("on sensor...");
+  
+  // First image capture
+  timeoutCounter = 0;
+  while (p != FINGERPRINT_OK) {
+    p = finger.getImage();
+    switch (p) {
+      case FINGERPRINT_OK:
+        lcd.setCursor(0, 2);
+        lcd.print("Image captured");
+        Serial.println("Image captured");
+        break;
+      case FINGERPRINT_NOFINGER:
+        if (timeoutCounter % 30 == 0) { // Update display every ~1.5 seconds
+          lcd.setCursor(0, 2);
+          lcd.print("Waiting...       ");
+        }
+        break;
+      default:
+        lcd.setCursor(0, 2);
+        lcd.print("Error: " + String(p));
+        delay(1000);
+        break;
+    }
+    
+    delay(50);
+    timeoutCounter++;
+    if (timeoutCounter > MAX_TIMEOUT) {
+      lcd.setCursor(0, 3);
+      lcd.print("Timeout! Try again");
+      Serial.println("Enrollment timeout");
+      delay(2000);
+      return false;
+    }
+  }
+
+  // First conversion
+  p = finger.image2Tz(1);
+  if (p != FINGERPRINT_OK) {
+    lcd.setCursor(0, 3);
+    lcd.print("Conv err: " + String(p));
+    Serial.print("Conversion error: ");
+    Serial.println(p);
+    delay(2000);
+    return false;
+  }
+
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Remove finger");
+  lcd.setCursor(0, 1);
+  lcd.print("Wait...");
+  Serial.println("Remove finger");
+  
+  delay(1000); // Wait a bit before checking
+  
+  // Wait for finger removal
+  timeoutCounter = 0;
+  p = 0;
+  while (p != FINGERPRINT_NOFINGER) {
+    p = finger.getImage();
+    delay(50);
+    timeoutCounter++;
+    if (timeoutCounter > 100) { // 5 second timeout
+      lcd.setCursor(0, 2);
+      lcd.print("Please remove finger");
+      timeoutCounter = 0;
+    }
+  }
+  
+  Serial.println("Finger removed");
+  
+  // Wait a bit before asking for second placement
+  delay(1000);
+  
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Place same finger");
+  lcd.setCursor(0, 1);
+  lcd.print("again...");
+  
+  // Second capture
+  p = -1;
+  timeoutCounter = 0;
+  while (p != FINGERPRINT_OK) {
+    p = finger.getImage();
+    switch (p) {
+      case FINGERPRINT_OK:
+        lcd.setCursor(0, 2);
+        lcd.print("Image captured");
+        Serial.println("Second image captured");
+        break;
+      case FINGERPRINT_NOFINGER:
+        if (timeoutCounter % 30 == 0) { // Update display every ~1.5 seconds
+          lcd.setCursor(0, 2);
+          lcd.print("Waiting...       ");
+        }
+        break;
+      default:
+        lcd.setCursor(0, 2);
+        lcd.print("Error: " + String(p));
+        delay(1000);
+        break;
+    }
+    
+    delay(50);
+    timeoutCounter++;
+    if (timeoutCounter > MAX_TIMEOUT) {
+      lcd.setCursor(0, 3);
+      lcd.print("Timeout! Try again");
+      Serial.println("Enrollment timeout");
+      delay(2000);
+      return false;
+    }
+  }
+
+  // Second conversion
+  p = finger.image2Tz(2);
+  if (p != FINGERPRINT_OK) {
+    lcd.setCursor(0, 3);
+    lcd.print("Conv err: " + String(p));
+    Serial.print("Conversion error 2: ");
+    Serial.println(p);
+    delay(2000);
+    return false;
+  }
+
+  // Create model from the two images
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Creating model...");
+  Serial.println("Creating fingerprint model...");
+  
+  p = finger.createModel();
+  if (p != FINGERPRINT_OK) {
+    lcd.setCursor(0, 1);
+    if (p == FINGERPRINT_ENROLLMISMATCH) {
+      lcd.print("Finger didn't match");
+      Serial.println("Fingerprints did not match");
+    } else {
+      lcd.print("Model err: " + String(p));
+      Serial.print("Model error: ");
+      Serial.println(p);
+    }
+    delay(2000);
+    return false;
+  }
+
+  // Store the model
+  p = finger.storeModel(id);
+  if (p == FINGERPRINT_OK) {
+    lcd.setCursor(0, 1);
+    lcd.print("Stored successfully!");
+    lcd.setCursor(0, 2);
+    lcd.print("ID #" + String(id));
+    Serial.println("Fingerprint stored successfully");
+    
+    // Notify MQTT that a new fingerprint was enrolled
+    if (mqtt.connected()) {
+      mqtt.publish(mqtt_topic_status, String("New fingerprint enrolled, ID: " + String(id)).c_str());
+    }
+    
+    delay(2000);
+    return true;
+  } else {
+    lcd.setCursor(0, 1);
+    lcd.print("Storage failed: " + String(p));
+    Serial.print("Storage error: ");
+    Serial.println(p);
+    delay(2000);
+    return false;
+  }
+}
 
 // Enhanced getFingerprintID function with better error handling
 int getFingerprintID() {
+  static unsigned long lastErrorTime = 0;
+  static int consecutiveErrors = 0;
+  
   uint8_t p = finger.getImage();
   switch (p) {
     case FINGERPRINT_OK:
       Serial.println("Image taken");
+      consecutiveErrors = 0; // Reset error counter on success
       break;
     case FINGERPRINT_NOFINGER:
-      return -1;
+      return -1; // Normal state, no finger detected
     case FINGERPRINT_PACKETRECIEVEERR:
-      Serial.println("Communication error");
-      showFingerprintError("Sensor Error");
+      // Only show error if it persists
+      consecutiveErrors++;
+      if (consecutiveErrors > 3 && (millis() - lastErrorTime > 5000)) {
+        Serial.println("Communication error");
+        showFingerprintError("Sensor Comm Error");
+        lastErrorTime = millis();
+        consecutiveErrors = 0;
+      }
       return -2;
     case FINGERPRINT_IMAGEFAIL:
       Serial.println("Imaging error");
       showFingerprintError("Image Error");
       return -2;
     default:
-      Serial.println("Unknown error");
-      showFingerprintError("Unknown Error");
+      Serial.println("Unknown error code: " + String(p));
+      // Check if sensor is connected or responsive
+      if (!finger.verifyPassword()) {
+        showFingerprintError("Sensor Disconnected");
+        // Try to reconnect to the sensor
+        mySerial.begin(57600, SERIAL_8N1, 16, 17);
+        delay(1000);
+      } else {
+        showFingerprintError("Unknown Error: " + String(p));
+      }
       return -2;
   }
 
@@ -849,23 +1171,23 @@ int getFingerprintID() {
       break;
     case FINGERPRINT_IMAGEMESS:
       Serial.println("Image too messy");
-      showFingerprintError("Poor Quality");
+      showFingerprintError("Poor Quality - Try Again");
       return -2;
     case FINGERPRINT_PACKETRECIEVEERR:
-      Serial.println("Communication error");
+      Serial.println("Communication error during conversion");
       showFingerprintError("Comm Error");
       return -2;
     case FINGERPRINT_FEATUREFAIL:
       Serial.println("Could not find fingerprint features");
-      showFingerprintError("No Features");
+      showFingerprintError("No Features Found");
       return -2;
     case FINGERPRINT_INVALIDIMAGE:
       Serial.println("Invalid image");
       showFingerprintError("Invalid Image");
       return -2;
     default:
-      Serial.println("Unknown error");
-      showFingerprintError("Process Error");
+      Serial.println("Unknown conversion error: " + String(p));
+      showFingerprintError("Process Error: " + String(p));
       return -2;
   }
 
@@ -880,7 +1202,7 @@ int getFingerprintID() {
     // Check confidence level (optional security feature)
     if (finger.confidence < 50) {
       Serial.println("Low confidence match - access denied");
-      showFingerprintError("Low Confidence");
+      showFingerprintError("Low Confidence: " + String(finger.confidence));
       
       // Notify MQTT server about low confidence match
       if (mqtt.connected()) {
@@ -900,16 +1222,16 @@ int getFingerprintID() {
     
     return finger.fingerID;
   } else if (p == FINGERPRINT_PACKETRECIEVEERR) {
-    Serial.println("Communication error");
-    showFingerprintError("Comm Error");
+    Serial.println("Communication error during search");
+    showFingerprintError("Comm Error in Search");
     return -2;
   } else if (p == FINGERPRINT_NOTFOUND) {
     Serial.println("Fingerprint not found in database");
     // Don't show error here, let processAttendance handle it
     return -3; // Special code for "not found"
   } else {
-    Serial.println("Unknown error");
-    showFingerprintError("Search Error");
+    Serial.println("Unknown search error: " + String(p));
+    showFingerprintError("Search Error: " + String(p));
     return -2;
   }
 }
@@ -936,20 +1258,8 @@ void showFingerprintError(String errorMsg) {
     mqtt.publish(mqtt_topic_status, buffer, n);
   }
   
-  playErrorSound();
   delay(2000);
   displayWelcomeScreen();
-}
-
-// New function for unauthorized access sound
-void playUnauthorizedSound() {
-  // Play a distinct pattern for security alerts
-  for (int i = 0; i < 5; i++) {
-    digitalWrite(BUZZER, HIGH);
-    delay(200);
-    digitalWrite(BUZZER, LOW);
-    delay(200);
-  }
 }
 
 void saveEmployeeData() {
@@ -1004,34 +1314,70 @@ void resetToMainScreen() {
   displayWelcomeScreen();
 }
 
-void playSuccessSound() {
-  for (int i = 0; i < 2; i++) {
-    digitalWrite(BUZZER, HIGH);
-    delay(100);
-    digitalWrite(BUZZER, LOW);
-    delay(100);
-  }
-}
-
-void playErrorSound() {
-  digitalWrite(BUZZER, HIGH);
-  delay(500);
-  digitalWrite(BUZZER, LOW);
-}
-
-void playAccessGrantedSound() {
-  for (int i = 0; i < 3; i++) {
-    digitalWrite(BUZZER, HIGH);
-    delay(200);
-    digitalWrite(BUZZER, LOW);
-    delay(100);
-  }
-}
-
 // MQTT Setup Function
 void setupMqtt() {
   mqtt.setServer(mqtt_server, mqtt_port);
   mqtt.setCallback(mqttCallback);
   // Try to connect initially
   reconnectMqtt();
+}
+
+// Add a new function to reset the fingerprint sensor
+void resetFingerprintSensor() {
+  Serial.println("Resetting fingerprint sensor...");
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Resetting Sensor");
+  lcd.setCursor(0, 1);
+  lcd.print("Please wait...");
+  
+  // Close and reopen the serial connection
+  mySerial.end();
+  delay(500);
+  mySerial.begin(57600, SERIAL_8N1, 16, 17);
+  delay(1000);
+  
+  // Check if sensor is responsive
+  if (finger.verifyPassword()) {
+    Serial.println("Sensor reset successful");
+    lcd.setCursor(0, 2);
+    lcd.print("Reset successful");
+    
+    // Get template count
+    finger.getTemplateCount();
+    lcd.setCursor(0, 3);
+    lcd.print("Templates: " + String(finger.templateCount));
+    
+    // Notify MQTT server about successful reset
+    if (mqtt.connected()) {
+      DynamicJsonDocument doc(256);
+      doc["event"] = "sensor_reset";
+      doc["status"] = "success";
+      doc["templates"] = finger.templateCount;
+      doc["timestamp"] = millis() - systemStartTime;
+      
+      char buffer[256];
+      size_t n = serializeJson(doc, buffer);
+      mqtt.publish(mqtt_topic_status, buffer, n);
+    }
+  } else {
+    Serial.println("Sensor reset failed");
+    lcd.setCursor(0, 2);
+    lcd.print("Reset failed");
+    
+    // Notify MQTT server about failed reset
+    if (mqtt.connected()) {
+      DynamicJsonDocument doc(256);
+      doc["event"] = "sensor_reset";
+      doc["status"] = "failed";
+      doc["timestamp"] = millis() - systemStartTime;
+      
+      char buffer[256];
+      size_t n = serializeJson(doc, buffer);
+      mqtt.publish(mqtt_topic_status, buffer, n);
+    }
+  }
+  
+  delay(3000);
+  displayWelcomeScreen();
 }
