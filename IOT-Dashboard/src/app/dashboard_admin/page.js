@@ -102,12 +102,14 @@ const ProfileDashboard = () => {  // Create refs for form inputs
       .catch(err => console.error('Failed to fetch departments:', err));
   }, []);
 
-  const filteredProfiles = useMemo(() =>
-    profiles.filter(profile =>
+  const filteredProfiles = useMemo(() => {
+    const list = Array.isArray(profiles) ? profiles : [];
+    return list.filter(profile =>
       profile.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
       profile.position.toLowerCase().includes(searchTerm.toLowerCase()) ||
       profile.department.toLowerCase().includes(searchTerm.toLowerCase())
-    ), [profiles, searchTerm]);
+    );
+  }, [profiles, searchTerm]);
   const handleEdit = useCallback((profile) => {
     setEditForm({ ...profile });
     setIsFormOpen(true);

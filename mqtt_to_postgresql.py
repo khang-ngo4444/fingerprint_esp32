@@ -41,5 +41,6 @@ client.on_connect = on_connect
 client.on_message = on_message
 
 # Kết nối tới đúng địa chỉ IP của MQTT broker
-client.connect("172.16.5.124", 1883, 60)
+# client.connect("172.16.5.124", 1883, 60)
+client.connect("192.168.1.14", 1883, 60)
 client.loop_forever()

@@ -7,11 +7,15 @@
 #include <ArduinoJson.h>  // Added for JSON formatting
 
 // WiFi credentials
-const char* ssid = "VNUK4-10";
-const char* password = "Z@q12wsx";
+// const char* ssid = "VNUK4-10";
+// const char* password = "Z@q12wsx";
+
+const char* ssid = "hotgirl";
+const char* password = "thunguyen730";
 
 // MQTT Configuration
-const char* mqtt_server = "172.16.5.124";
+// const char* mqtt_server = "172.16.5.124";
+const char* mqtt_server = "192.168.1.14";
 const int mqtt_port = 1883;
 const char* mqtt_user = "mqtt_user";       // Change if your broker requires authentication
 const char* mqtt_password = "mqtt_password";   // Change if your broker requires authentication
