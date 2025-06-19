@@ -6,6 +6,8 @@
 #include <PubSubClient.h> // Added for MQTT
 #include <ArduinoJson.h>  // Added for JSON formatting
 
+// Chức năng nhập vân tay được di chuyển sang file fingerprint_enrollment.ino
+// Khai báo các biến toàn cục sẽ được chia sẻ giữa các file
 // WiFi credentials
 const char* ssid = "VNUK4-10";
 const char* password = "Z@q12wsx";
@@ -20,7 +22,7 @@ const char* mqtt_topic_attendance = "fingerprint/attendance";
 const char* mqtt_topic_status = "fingerprint/status";
 const char* mqtt_topic_command = "fingerprint/command";
 // --- ADDED central-authority topics ---
-const char* TOPIC_SCAN   = "fingerprint/scan";
+const char* TOPIC_SCAN = "fingerprint/scan";
 const char* TOPIC_ACCESS = "fingerprint/access";
 
 WiFiClient espClient;
@@ -97,11 +99,16 @@ int employeeCount = 0;
 #define ATTENDANCE_DATA_START 2048  // Start attendance data at offset 2048
 
 // --- ADDED central-authority state ---
-bool  waitingForResponse = false;
-int   lastFingerprintId  = -1;
-int   lastConfidence     = 0;
+bool waitingForResponse = false;
+int lastFingerprintId = -1;
+int lastConfidence = 0;
 unsigned long responseTimer = 0;
 const unsigned long RESPONSE_TIMEOUT = 5000; // ms
+
+// Function declarations from fingerprint_enrollment.ino
+void addEmployee();
+void deleteEmployee();
+bool enrollFingerprint(int id);
 
 // --- ADD THIS FORWARD DECLARATION ---
 void setupMqtt();
@@ -212,8 +219,8 @@ void setup() {
   Serial.println("=== ESP32 AttendanceSystem ===");
   Serial.println("Commands:");
   Serial.println("• Scan fingerprint for attendance");
-  Serial.println("• Enter admin password + # for admin mode");
-  Serial.println("• Admin commands: 1#=Add Employee, 2#=Delete, 3#=Report, 9#=Exit");
+  Serial.println("• Enter admin password + * for admin mode");
+  Serial.println("• Admin commands: 1*=Enroll Fingerprint, 2*=Delete, 3*=Report, 9*=Exit");
   Serial.println("===============================");
   
   lastActivity = millis();
@@ -304,12 +311,17 @@ void loop() {
   delay(200);
 }
 
-// --- ADDED --- Publish fingerprint scan to Pi
+// --- SIMPLIFIED --- Publish fingerprint scan to Pi with ID focus
 void publishScanEvent(int fid, int conf) {
-  DynamicJsonDocument doc(128);
+  DynamicJsonDocument doc(256);
   doc["fingerprint_id"] = fid;
   doc["confidence"]     = conf;
-  char buf[128];
+  doc["device_id"]      = mqtt_client_id;
+  doc["timestamp"]      = millis() - systemStartTime;
+  
+  // We no longer need to check for local names as they'll come from server
+  
+  char buf[256];
   size_t n = serializeJson(doc, buf);
   mqtt.publish(TOPIC_SCAN, buf, n);
 }
@@ -355,13 +367,15 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   }
 }
 
-// --- ADDED --- Grant access (unlock, display)
+// --- ADDED --- Grant access (unlock, display) - Enhanced for dashboard integration
 void grantAccess(const String& name, const String& role) {
   lcd.clear();
   lcd.setCursor(0,0); lcd.print("GRANTED: " + name);
   lcd.setCursor(0,1); lcd.print("Role: " + role);
+  lcd.setCursor(0,2); lcd.print("ID: " + String(lastFingerprintId));
   // activate relay
   digitalWrite(RELAY, HIGH);
+  playAccessGrantedSound();
   delay(3000);
   digitalWrite(RELAY, LOW);
   delay(500);
@@ -448,7 +462,7 @@ void displayWelcomeScreen() {
   lcd.setCursor(0, 1);
   lcd.print("Scan Fingerprint");
   lcd.setCursor(0, 2);
-  lcd.print("or Enter Admin Code");
+  lcd.print("Admin: Enter Code + *");
   
   // Display system uptime instead of RTC time
   unsigned long uptime = (millis() - systemStartTime) / 1000;
@@ -521,11 +535,11 @@ void displayAdminMenu() {
   lcd.setCursor(0, 0);
   lcd.print("ADMIN MODE");
   lcd.setCursor(0, 1);
-  lcd.print("1#=Add Employee");
+  lcd.print("1*=Enroll Fingerprint");
   lcd.setCursor(0, 2);
-  lcd.print("2#=Delete 3#=Report");
+  lcd.print("2*=Delete 3*=Report");
   lcd.setCursor(0, 3);
-  lcd.print("9#=Exit Admin");
+  lcd.print("9*=Exit Admin");
 }
 
 void handleAdminCommand() {
@@ -551,148 +565,7 @@ void handleAdminCommand() {
   inputPassword = "";
 }
 
-void addEmployee() {
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("ADD EMPLOYEE");
-  
-  // Get employee ID
-  lcd.setCursor(0, 1);
-  lcd.print("Enter ID (1-127)#:");
-  
-  String idInput = getNumericInput();
-  int empId = idInput.toInt();
-  
-  if (empId < 1 || empId > 127) {
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("Invalid ID!");
-    delay(2000);
-    displayAdminMenu();
-    return;
-  }
-  
-  // Get employee name
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("Enter Name:");
-  lcd.setCursor(0, 1);
-  lcd.print("Use keypad...");
-  
-  String empName = getTextInput();
-  
-  // Enroll fingerprint
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("Place finger on");
-  lcd.setCursor(0, 1);
-  lcd.print("sensor...");
-  
-  if (enrollFingerprint(empId)) {
-    // Save employee data
-    employees[employeeCount].id = empId;
-    strncpy(employees[employeeCount].name, empName.c_str(), 19);
-    employees[employeeCount].name[19] = '\0';
-    employees[employeeCount].isActive = true;
-    employees[employeeCount].lastCheckIn = 0;
-    employees[employeeCount].lastCheckOut = 0;
-    employeeCount++;
-    
-    saveEmployeeData();
-    
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("Employee Added!");
-    lcd.setCursor(0, 1);
-    lcd.print("ID: " + String(empId));
-    lcd.setCursor(0, 2);
-    lcd.print("Name: " + empName);
-    playSuccessSound();
-    
-    // Notify MQTT server about new employee
-    if (mqtt.connected()) {
-      DynamicJsonDocument doc(256);
-      doc["event"] = "employee_added";
-      doc["id"] = empId;
-      doc["name"] = empName;
-      doc["timestamp"] = millis() - systemStartTime;
-      
-      char buffer[256];
-      size_t n = serializeJson(doc, buffer);
-      mqtt.publish(mqtt_topic_status, buffer, n);
-    }
-    
-    delay(3000);
-  } else {
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("Failed to add!");
-    playErrorSound();
-    delay(2000);
-  }
-  
-  displayAdminMenu();
-}
-
-void deleteEmployee() {
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("DELETE EMPLOYEE");
-  lcd.setCursor(0, 1);
-  lcd.print("Enter ID#:");
-  
-  String idInput = getNumericInput();
-  int empId = idInput.toInt();
-  
-  // Find and remove employee
-  bool found = false;
-  String deletedName = "";
-  
-  for (int i = 0; i < employeeCount; i++) {
-    if (employees[i].id == empId) {
-      deletedName = String(employees[i].name);
-      // Delete fingerprint from sensor
-      finger.deleteModel(empId);
-      
-      // Shift array to remove employee
-      for (int j = i; j < employeeCount - 1; j++) {
-        employees[j] = employees[j + 1];
-      }
-      employeeCount--;
-      found = true;
-      break;
-    }
-  }
-  
-  if (found) {
-    saveEmployeeData();
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("Employee Deleted!");
-    playSuccessSound();
-    
-    // Notify MQTT server about employee deletion
-    if (mqtt.connected()) {
-      DynamicJsonDocument doc(256);
-      doc["event"] = "employee_deleted";
-      doc["id"] = empId;
-      doc["name"] = deletedName;
-      doc["timestamp"] = millis() - systemStartTime;
-      
-      char buffer[256];
-      size_t n = serializeJson(doc, buffer);
-      mqtt.publish(mqtt_topic_status, buffer, n);
-    }
-  } else {
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("Employee Not Found!");
-    playErrorSound();
-  }
-  
-  delay(2000);
-  displayAdminMenu();
-}
+// addEmployee() và deleteEmployee() đã được di chuyển sang file fingerprint_enrollment.ino
 
 void generateReport() {
   lcd.clear();
@@ -920,12 +793,12 @@ String getNumericInput() {
   while (true) {
     char key = customKeypad.getKey();
     if (key) {
-      if (key == '#') {
-        break;
+      if (key == '*') {
+        break; // Changed from # to * for consistency
       } else if (key >= '0' && key <= '9') {
         input += key;
         lcd.print(key);
-      } else if (key == '*') {
+      } else if (key == '#') {
         input = "";
         lcd.clear();
         lcd.setCursor(0, 1);
@@ -937,151 +810,13 @@ String getNumericInput() {
   return input;
 }
 
+// Removed text input function as names will come from dashboard
 String getTextInput() {
-  // Simplified text input using T9-like method
-  // 2=ABC, 3=DEF, 4=GHI, 5=JKL, 6=MNO, 7=PQRS, 8=TUV, 9=WXYZ
-  String input = "";
-  String keyMap[10] = {"", "", "ABC", "DEF", "GHI", "JKL", "MNO", "PQRS", "TUV", "WXYZ"};
-  
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("T9 Input (2-9)");
-  lcd.setCursor(0, 1);
-  lcd.print("0=Space *=Clear #=OK");
-  lcd.setCursor(0, 2);
-  
-  while (input.length() < 19) {
-    char key = customKeypad.getKey();
-    if (key) {
-      if (key == '#') {
-        break;
-      } else if (key == '*') {
-        input = "";
-        lcd.setCursor(0, 2);
-        lcd.print("                    ");
-        lcd.setCursor(0, 2);
-      } else if (key == '0') {
-        input += " ";
-        lcd.print(" ");
-      } else if (key >= '2' && key <= '9') {
-        int keyNum = key - '0';
-        if (keyMap[keyNum].length() > 0) {
-          input += keyMap[keyNum][0]; // Use first letter for simplicity
-          lcd.print(keyMap[keyNum][0]);
-        }
-      }
-    }
-    delay(100);
-  }
-  
-  return input;
+  // Simply return empty string - names will be updated from dashboard
+  return "";
 }
 
-bool enrollFingerprint(int id) {
-  Serial.print("Enrolling fingerprint ID #");
-  Serial.println(id);
-  
-  int p = -1;
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("Place finger");
-  lcd.setCursor(0, 1);
-  lcd.print("on sensor...");
-  
-  while (p != FINGERPRINT_OK) {
-    p = finger.getImage();
-    switch (p) {
-    case FINGERPRINT_OK:
-      lcd.setCursor(0, 2);
-      lcd.print("Image captured");
-      break;
-    case FINGERPRINT_NOFINGER:
-      break;
-    default:
-      lcd.setCursor(0, 2);
-      lcd.print("Error occurred");
-      break;
-    }
-    delay(50);
-  }
-
-  p = finger.image2Tz(1);
-  if (p != FINGERPRINT_OK) {
-    lcd.setCursor(0, 3);
-    lcd.print("Conversion error");
-    return false;
-  }
-
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("Remove finger");
-  delay(2000);
-  
-  p = 0;
-  while (p != FINGERPRINT_NOFINGER) {
-    p = finger.getImage();
-    delay(50);
-  }
-  
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("Place same finger");
-  lcd.setCursor(0, 1);
-  lcd.print("again...");
-  
-  p = -1;
-  while (p != FINGERPRINT_OK) {
-    p = finger.getImage();
-    switch (p) {
-    case FINGERPRINT_OK:
-      lcd.setCursor(0, 2);
-      lcd.print("Image captured");
-      break;
-    case FINGERPRINT_NOFINGER:
-      break;
-    default:
-      lcd.setCursor(0, 2);
-      lcd.print("Error occurred");
-      break;
-    }
-    delay(50);
-  }
-
-  p = finger.image2Tz(2);
-  if (p != FINGERPRINT_OK) {
-    lcd.setCursor(0, 3);
-    lcd.print("Conversion error");
-    return false;
-  }
-
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("Creating model...");
-  
-  p = finger.createModel();
-  if (p != FINGERPRINT_OK) {
-    lcd.setCursor(0, 1);
-    lcd.print("Model creation failed");
-    return false;
-  }
-
-  p = finger.storeModel(id);
-  if (p == FINGERPRINT_OK) {
-    lcd.setCursor(0, 1);
-    lcd.print("Stored successfully!");
-    
-    // Notify MQTT that a new fingerprint was enrolled
-    if (mqtt.connected()) {
-      mqtt.publish(mqtt_topic_status, String("New fingerprint enrolled, ID: " + String(id)).c_str());
-    }
-    
-    return true;
-  } else {
-    lcd.setCursor(0, 1);
-    lcd.print("Storage failed");
-    return false;
-  }
-}
+// enrollFingerprint() đã được di chuyển sang file fingerprint_enrollment.ino
 
 // Enhanced getFingerprintID function with better error handling
 int getFingerprintID() {
