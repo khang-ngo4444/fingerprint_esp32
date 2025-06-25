@@ -2,8 +2,6 @@
 
 A comprehensive fingerprint-based attendance and access control system using the ESP32 microcontroller and R307 fingerprint sensor, with MQTT integration for real-time data processing and a Next.js web dashboard.
 
-![Fingerprint Attendance System](./images/fingerprint_system.jpg)
-
 ## System Overview
 
 This project implements a complete attendance and access control solution with the following components:
@@ -45,8 +43,6 @@ This project implements a complete attendance and access control solution with t
 - Connecting wires
 
 ## Wiring Diagram
-
-![ESP32 Wiring Diagram](./images/wiring_diagram.jpg)
 
 ### ESP32 to R307 Fingerprint Sensor
 - ESP32 GPIO16 (RX2) → R307 TX
@@ -146,7 +142,7 @@ This project implements a complete attendance and access control solution with t
 
 ## System Architecture
 
-![System Architecture Diagram](./images/capture.png)
+![System Architecture Diagram](./images/heading.png)
 
 ```
 ┌───────────────┐     MQTT     ┌───────────────┐
@@ -168,6 +164,49 @@ This project implements a complete attendance and access control solution with t
                               │  Next.js       │
                               │  Web Dashboard │
                               └────────────────┘
+```
+
+## Database Structure
+
+### Users Table
+```sql
+CREATE TABLE users (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    fingerprint_id INTEGER UNIQUE,
+    user_role INTEGER REFERENCES roles(id),
+    department_id INTEGER REFERENCES departments(id),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+### Roles Table
+```sql
+CREATE TABLE roles (
+    id SERIAL PRIMARY KEY,
+    role_name VARCHAR(50) NOT NULL,
+    permission_level INTEGER NOT NULL
+);
+```
+
+### Departments Table
+```sql
+CREATE TABLE departments (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    location VARCHAR(100)
+);
+```
+
+### Checkin Logs Table
+```sql
+CREATE TABLE checkin_logs (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id),
+    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    event_type VARCHAR(20) NOT NULL,
+    device_id VARCHAR(50)
+);
 ```
 
 ## Division of Labor
