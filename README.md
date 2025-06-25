@@ -20,6 +20,40 @@ This project implements a complete attendance and access control solution with t
 3. **Web Dashboard**:
    - Next.js admin interface for managing users and viewing attendance data
 
+## System Architecture
+
+![System Architecture Diagram](image/Heading.png)
+
+The system functions with the following architecture:
+
+- **ESP32 Microcontroller** captures fingerprint data and sends it to the server via MQTT
+- **Raspi 5 Server** with PostgreSQL database processes the data and makes access decisions
+- **Admin Dashboard** provides a web interface for managing users and viewing attendance records
+
+The communication flow is as follows:
+
+```
+┌───────────────┐     MQTT     ┌───────────────┐
+│  ESP32 with   │◄───Topics────┤ Python MQTT   │
+│  Fingerprint  │              │ Bridge Script │
+│  Sensor       │─────────────►│               │
+└───────────────┘              └───────┬───────┘
+                                       │
+                                       │ PostgreSQL
+                                       ▼
+                              ┌────────────────┐
+                              │  Database      │
+                              │                │
+                              └───────┬────────┘
+                                      │
+                                      │ API
+                                      ▼
+                              ┌────────────────┐
+                              │  Next.js       │
+                              │  Web Dashboard │
+                              └────────────────┘
+```
+
 ## Features
 
 - **Biometric Authentication**: Secure fingerprint-based access control
@@ -105,6 +139,14 @@ This project implements a complete attendance and access control solution with t
   npm run dev
   ```
 
+## MQTT Topics
+
+- `fingerprint/scan`: ESP32 publishes fingerprint scan events
+- `fingerprint/access`: Server publishes access decisions to ESP32
+- `fingerprint/attendance`: ESP32 publishes attendance records
+- `fingerprint/status`: ESP32 publishes system status updates
+- `fingerprint/command`: Server sends commands to ESP32
+
 ## Usage
 
 ### Device Operation
@@ -131,40 +173,6 @@ This project implements a complete attendance and access control solution with t
   - Username: admin
   - Password: 123qwe!@#
 - Manage users, view attendance records, and system status
-
-## MQTT Topics
-
-- `fingerprint/scan`: ESP32 publishes fingerprint scan events
-- `fingerprint/access`: Server publishes access decisions to ESP32
-- `fingerprint/attendance`: ESP32 publishes attendance records
-- `fingerprint/status`: ESP32 publishes system status updates
-- `fingerprint/command`: Server sends commands to ESP32
-
-## System Architecture
-
-![System Architecture Diagram](image/Heading.png)
-
-```
-┌───────────────┐     MQTT     ┌───────────────┐
-│  ESP32 with   │◄───Topics────┤ Python MQTT   │
-│  Fingerprint  │              │ Bridge Script │
-│  Sensor       │─────────────►│               │
-└───────────────┘              └───────┬───────┘
-                                       │
-                                       │ PostgreSQL
-                                       ▼
-                              ┌────────────────┐
-                              │  Database      │
-                              │               │
-                              └───────┬────────┘
-                                      │
-                                      │ API
-                                      ▼
-                              ┌────────────────┐
-                              │  Next.js       │
-                              │  Web Dashboard │
-                              └────────────────┘
-```
 
 ## Database Structure
 
@@ -208,10 +216,6 @@ CREATE TABLE checkin_logs (
     device_id VARCHAR(50)
 );
 ```
-
-## Division of Labor
-
-![Division of Labor](image/Capture.PNG)
 
 ## Known Issues and Limitations
 
