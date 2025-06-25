@@ -2,6 +2,8 @@
 
 A comprehensive fingerprint-based attendance and access control system using the ESP32 microcontroller and R307 fingerprint sensor, with MQTT integration for real-time data processing and a Next.js web dashboard.
 
+![Fingerprint Attendance System](./images/fingerprint_system.jpg)
+
 ## System Overview
 
 This project implements a complete attendance and access control solution with the following components:
@@ -43,6 +45,8 @@ This project implements a complete attendance and access control solution with t
 - Connecting wires
 
 ## Wiring Diagram
+
+![ESP32 Wiring Diagram](./images/wiring_diagram.jpg)
 
 ### ESP32 to R307 Fingerprint Sensor
 - ESP32 GPIO16 (RX2) → R307 TX
@@ -141,6 +145,8 @@ This project implements a complete attendance and access control solution with t
 - `fingerprint/command`: Server sends commands to ESP32
 
 ## System Architecture
+
+![System Architecture Diagram](./images/system_architecture.jpg)
 
 ```
 ┌───────────────┐     MQTT     ┌───────────────┐
