@@ -146,7 +146,7 @@ This project implements a complete attendance and access control solution with t
 
 ## System Architecture
 
-![System Architecture Diagram](./images/system_architecture.jpg)
+![System Architecture Diagram](./images/capture.png)
 
 ```
 ┌───────────────┐     MQTT     ┌───────────────┐
@@ -169,6 +169,10 @@ This project implements a complete attendance and access control solution with t
                               │  Web Dashboard │
                               └────────────────┘
 ```
+
+## Division of Labor
+
+![Division of Labor](./images/capture.png)
 
 ## Known Issues and Limitations
 
