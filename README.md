@@ -142,7 +142,7 @@ This project implements a complete attendance and access control solution with t
 
 ## System Architecture
 
-[System Architecture Diagram](image\Heading.png)
+![System Architecture Diagram](image/Heading.png)
 
 ```
 ┌───────────────┐     MQTT     ┌───────────────┐
@@ -211,7 +211,7 @@ CREATE TABLE checkin_logs (
 
 ## Division of Labor
 
-[Division of Labor](image\Capture.PNG)
+![Division of Labor](image/Capture.PNG)
 
 ## Known Issues and Limitations
 
