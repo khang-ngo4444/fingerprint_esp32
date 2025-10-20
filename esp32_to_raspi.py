@@ -2,6 +2,19 @@ import json
 import psycopg2
 import paho.mqtt.client as mqtt
 from datetime import datetime
+import base64
+
+# Hàm giải mã template từ base64 sang bytes và list[int]
+def decode_fingerprint_template(template_b64):
+    try:
+        template_bytes = base64.b64decode(template_b64)
+        template_ints = list(template_bytes)
+        print(f"[INFO] Độ dài template (bytes): {len(template_bytes)}")
+        print(f"[INFO] Mẫu dữ liệu đầu tiên: {template_ints[:16]} ...")
+        return template_bytes, template_ints
+    except Exception as e:
+        print(f"[ERROR] Lỗi giải mã template: {e}")
+        return b'', []
 
 # Kết nối DB
 conn = psycopg2.connect(
@@ -26,13 +39,35 @@ def on_message(client, userdata, msg):
     
     try:
         data = json.loads(msg.payload)
-        
+
+        # Nếu có template vân tay gửi lên
+        if "template" in data and "user_id" in data:
+            user_id = data["user_id"]
+            template_b64 = data["template"]
+            print(f"[MQTT] Nhận template vân tay cho user_id={user_id}")
+            template_bytes, template_ints = decode_fingerprint_template(template_b64)
+
+            # Lưu template vào DB
+            cursor.execute("""
+                UPDATE users SET fingerprint_template = %s WHERE id = %s
+            """, (psycopg2.Binary(template_bytes), user_id))
+            conn.commit()
+            print(f"[DB] Đã lưu template cho user_id={user_id}, bytes={len(template_bytes)}")
+
+            # Phản hồi về ESP32
+            response = {
+                "result": "template_saved",
+                "user_id": user_id,
+                "length": len(template_bytes)
+            }
+            client.publish("fingerprint/access", json.dumps(response))
+            print("Template saved to server!")
+
         # Check if this is a scan event from fingerprint/scan topic
-        if "fingerprint_id" in data:
+        elif "fingerprint_id" in data:
             fingerprint_id = data["fingerprint_id"]
             confidence = data["confidence"]
-            
-            # Query thông tin user với join tables
+            # ...existing code...
             cursor.execute("""
                 SELECT u.name, r.name as role, d.name as department 
                 FROM users u
@@ -40,13 +75,10 @@ def on_message(client, userdata, msg):
                 LEFT JOIN departments d ON u.department_id = d.id
                 WHERE u.id = %s
             """, (fingerprint_id,))
-            
             user_info = cursor.fetchone()
-            
             if user_info:
                 name, role, department = user_info
-                
-                # Xác định trạng thái checkin/checkout
+                # ...existing code...
                 cursor.execute("""
                     SELECT check_type FROM checkin_logs
                     WHERE user_id = %s
@@ -58,22 +90,16 @@ def on_message(client, userdata, msg):
                     check_type = "checkout"
                 else:
                     check_type = "checkin"
-                
-                # Hiển thị thông tin đẹp
                 print("🔍 USER DETECTED")
                 print(f"   👤 Name: {name}")
                 print(f"   💼 Role: {role}")
                 print(f"   🏢 Department: {department}") 
                 print(f"   📍 Status: {check_type.upper()}")
-                
-                # Insert checkin log
                 cursor.execute("""
                     INSERT INTO checkin_logs (user_id, check_type)
                     VALUES (%s, %s)
                 """, (fingerprint_id, check_type))
                 conn.commit()
-                
-                # Gửi response trở lại ESP32 với topic fingerprint/access
                 response = {
                     "result": "access_granted",
                     "name": name,
@@ -81,25 +107,19 @@ def on_message(client, userdata, msg):
                     "status": check_type
                 }
                 client.publish("fingerprint/access", json.dumps(response))
-                
                 print("✅ Access granted and logged successfully!")
-                
             else:
                 print(f"❌ User ID {fingerprint_id} not found in database")
-                
-                # Gửi lỗi trở lại ESP32 với topic fingerprint/access
                 error_response = {
                     "result": "access_denied",
                     "message": "User not found in database"
                 }
                 client.publish("fingerprint/access", json.dumps(error_response))
-                
+
         # Handle original fingerprint/attendance messages for backward compatibility
         elif "user_id" in data:
             user_id = data["user_id"]
             check_type = data["check_type"]
-
-            # Query thông tin user với join tables
             cursor.execute("""
                 SELECT u.name, r.name as role, d.name as department 
                 FROM users u
@@ -107,56 +127,42 @@ def on_message(client, userdata, msg):
                 LEFT JOIN departments d ON u.department_id = d.id
                 WHERE u.id = %s
             """, (user_id,))
-            
             user_info = cursor.fetchone()
-            
             if user_info:
                 name, role, department = user_info
-                
-                # Hiển thị thông tin đẹp
                 print("🔍 USER DETECTED")
                 print(f"   👤 Name: {name}")
                 print(f"   💼 Role: {role}")
                 print(f"   🏢 Department: {department}") 
                 print(f"   📍 Action: {check_type.upper()}")
-                
-                # Insert checkin log
                 cursor.execute("""
                     INSERT INTO checkin_logs (user_id, check_type)
                     VALUES (%s, %s)
                 """, (user_id, check_type))
                 conn.commit()
-                
-                # Gửi notification trở lại ESP32 (tùy chọn)
                 response = {
                     "status": "success",
                     "user_name": name,
                     "role": role if role else "Unknown"
                 }
                 client.publish("fingerprint/access", json.dumps(response))
-                
-                print("✅ Logged successfully!")
-                
+                print("Logged successfully!")
             else:
-                print(f"❌ User ID {user_id} not found in database")
-                
-                # Gửi lỗi trở lại ESP32
+                print(f"User ID {user_id} not found in database")
                 error_response = {
                     "status": "error",
                     "message": "User not found"
                 }
                 client.publish("fingerprint/access", json.dumps(error_response))
-                
+
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"Error: {e}")
         conn.rollback()
-        
         error_response = {
             "result": "access_denied", 
             "message": f"System error: {str(e)}"
         }
         client.publish("fingerprint/access", json.dumps(error_response))
-    
     print("-" * 50)
 
 # Tạo client với callback API version 2
